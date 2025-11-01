@@ -357,7 +357,26 @@ bot.on('callback_query', async (callbackQuery) => {
         try {
             // Transfer all from claim wallet to funding wallet
             const senderWallet = createWalletFromPrivateKey(claimWallet.privateKey);
-            const amountToSend = balance - NETWORK_FEE;
+            
+            // Estimate gas for the transaction
+            await rateLimitedDelay();
+            const gasEstimate = await provider.estimateGas({
+                from: senderWallet.address,
+                to: userWallet.publicKey,
+                value: ethers.parseEther(balance.toString())
+            });
+            
+            await rateLimitedDelay();
+            const gasPrice = await provider.getFeeData();
+            const gasCost = parseFloat(ethers.formatEther(gasEstimate * gasPrice.gasPrice));
+            
+            // Calculate amount to send (balance - gas cost - small buffer)
+            const amountToSend = balance - gasCost - 0.00001;
+            
+            if (amountToSend <= 0) {
+                await bot.sendMessage(chatId, `❌ Insufficient balance to cover gas fees. Balance: ${balance.toFixed(6)} MON, Gas: ${gasCost.toFixed(6)} MON`);
+                return;
+            }
 
             const tx = {
                 to: userWallet.publicKey,
@@ -538,14 +557,34 @@ bot.on('message', async (msg) => {
             const claimWallet = state.claimWallet;
             const balance = await getWalletBalance(claimWallet.publicKey);
             
-            if (balance <= NETWORK_FEE) {
+            if (balance <= 0.0001) {
                 await bot.sendMessage(chatId, `❌ Insufficient balance. Balance: ${balance.toFixed(6)} MON`);
                 withdrawalState.delete(userId);
                 return;
             }
 
             const senderWallet = createWalletFromPrivateKey(claimWallet.privateKey);
-            const amountToSend = balance - NETWORK_FEE;
+            
+            // Estimate gas for the transaction
+            await rateLimitedDelay();
+            const gasEstimate = await provider.estimateGas({
+                from: senderWallet.address,
+                to: text,
+                value: ethers.parseEther(balance.toString())
+            });
+            
+            await rateLimitedDelay();
+            const gasPrice = await provider.getFeeData();
+            const gasCost = parseFloat(ethers.formatEther(gasEstimate * gasPrice.gasPrice));
+            
+            // Calculate amount to send (balance - gas cost - small buffer)
+            const amountToSend = balance - gasCost - 0.00001;
+            
+            if (amountToSend <= 0) {
+                await bot.sendMessage(chatId, `❌ Insufficient balance to cover gas fees. Balance: ${balance.toFixed(6)} MON, Gas: ${gasCost.toFixed(6)} MON`);
+                withdrawalState.delete(userId);
+                return;
+            }
 
             const tx = {
                 to: text,
@@ -574,14 +613,34 @@ bot.on('message', async (msg) => {
             const userWallet = state.userWallet;
             const balance = await getWalletBalance(userWallet.publicKey);
             
-            if (balance <= NETWORK_FEE) {
+            if (balance <= 0.0001) {
                 await bot.sendMessage(chatId, `❌ Insufficient balance. Balance: ${balance.toFixed(6)} MON`);
                 withdrawalState.delete(userId);
                 return;
             }
 
             const senderWallet = createWalletFromPrivateKey(userWallet.privateKey);
-            const amountToSend = balance - NETWORK_FEE;
+            
+            // Estimate gas for the transaction
+            await rateLimitedDelay();
+            const gasEstimate = await provider.estimateGas({
+                from: senderWallet.address,
+                to: text,
+                value: ethers.parseEther(balance.toString())
+            });
+            
+            await rateLimitedDelay();
+            const gasPrice = await provider.getFeeData();
+            const gasCost = parseFloat(ethers.formatEther(gasEstimate * gasPrice.gasPrice));
+            
+            // Calculate amount to send (balance - gas cost - small buffer)
+            const amountToSend = balance - gasCost - 0.00001;
+            
+            if (amountToSend <= 0) {
+                await bot.sendMessage(chatId, `❌ Insufficient balance to cover gas fees. Balance: ${balance.toFixed(6)} MON, Gas: ${gasCost.toFixed(6)} MON`);
+                withdrawalState.delete(userId);
+                return;
+            }
 
             const tx = {
                 to: text,
