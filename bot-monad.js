@@ -885,7 +885,7 @@ bot.onText(/\/pay (@\w+) (.+)/, async (msg, match) => {
         
         // Save tip to database
         await pool.query(
-            'INSERT INTO payments (from_user_id, to_username, amount, fee_amount, transaction_signature) VALUES ($1, $2, $3, $4, $5)',
+            'INSERT INTO tips (from_user_id, to_username, amount, fee_amount, transaction_signature) VALUES ($1, $2, $3, $4, $5)',
             [userId, recipientUsername, amount, fee, transaction.hash]
         );
         
@@ -937,10 +937,11 @@ The recipient can use /claim to receive their payment!`;
         
     } catch (error) {
         console.error('Tip error:', error);
-        if (setStatus) {
-            await setStatus({ failed: true, confirming: false, sent: !!status?.sent, errorMessage: error.message });
+        if (setStatus && typeof status !== 'undefined') {
+            await setStatus({ failed: true, confirming: false, sent: !!status.sent, errorMessage: error.message });
+        } else {
+            await bot.sendMessage(chatId, `❌ Failed to send payment: ${error.message}`);
         }
-        await bot.sendMessage(chatId, `❌ Failed to send payment: ${error.message}`);
     }
 });
 
