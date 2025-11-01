@@ -971,8 +971,8 @@ bot.onText(/\/pay (@\w+) (.+)/, async (msg, match) => {
             // Generate unique claim link
             const claimToken = generateClaimToken();
             await pool.query(
-                'INSERT INTO claim_links (claim_token, recipient_username, amount, from_user_id) VALUES ($1, $2, $3, $4)',
-                [claimToken, recipientUsername, amount, userId]
+                'INSERT INTO claim_links (claim_token, recipient_username, amount, from_user_id, transaction_hash) VALUES ($1, $2, $3, $4, $5)',
+                [claimToken, recipientUsername, amount, userId, transaction.hash]
             );
             
             const botUsername = (await bot.getMe()).username;
@@ -1214,10 +1214,14 @@ async function handleClaimLink(chatId, userId, username, claimToken) {
         const message = `✅ *Payment Claimed Successfully!*
 
 💰 Amount: ${parseFloat(claim.amount).toFixed(6)} MON
+🔗 Transaction: [View on Explorer](${getTransactionLink(claim.transaction_hash)})
 
 Your payment has been added to your claim wallet. Use /claim to view and manage your funds.`;
 
-        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, message, { 
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+        });
     } catch (error) {
         console.error('Claim link error:', error);
         await bot.sendMessage(chatId, "❌ Error processing claim. Please try again.");
@@ -1234,7 +1238,7 @@ async function handleAirdropClaim(chatId, userId, username, airdropToken) {
         
         // Get airdrop details
         const airdropData = await pool.query(
-            'SELECT ac.*, a.amount_per_claim, a.total_claims, a.claimed_count, a.active FROM airdrop_claims ac JOIN airdrops a ON ac.airdrop_id = a.airdrop_id WHERE ac.claim_token = $1',
+            'SELECT ac.*, a.amount_per_claim, a.total_claims, a.claimed_count, a.active, a.from_user_id FROM airdrop_claims ac JOIN airdrops a ON ac.airdrop_id = a.airdrop_id WHERE ac.claim_token = $1',
             [airdropToken]
         );
         
@@ -1268,19 +1272,14 @@ async function handleAirdropClaim(chatId, userId, username, airdropToken) {
             return;
         }
         
-        // Mark as claimed
-        await pool.query(
-            'UPDATE airdrop_claims SET claimed_by_user_id = $1, claimed_by_username = $2, claimed_at = NOW() WHERE claim_token = $3',
-            [userId.toString(), username, airdropToken]
-        );
+        // Get sender's wallet
+        const senderWallet = userWallets.get(claim.from_user_id);
+        if (!senderWallet) {
+            await bot.sendMessage(chatId, "❌ Airdrop creator's wallet not found.");
+            return;
+        }
         
-        // Update airdrop claimed count
-        await pool.query(
-            'UPDATE airdrops SET claimed_count = claimed_count + 1 WHERE airdrop_id = $1',
-            [claim.airdrop_id]
-        );
-        
-        // Get or create claim wallet
+        // Get or create claim wallet for recipient
         let claimWallet = claimWallets.get(username);
         if (!claimWallet) {
             const wallet = ethers.Wallet.createRandom();
@@ -1294,21 +1293,53 @@ async function handleAirdropClaim(chatId, userId, username, airdropToken) {
             await saveWallet(username, claimWallet, true);
         }
         
-        // Update amount
         const airdropAmount = parseFloat(claim.amount_per_claim);
+        
+        // Send the actual transaction on-chain
+        const senderEthersWallet = createWalletFromPrivateKey(senderWallet.privateKey);
+        
+        // Get nonce
+        await rateLimitedDelay();
+        const nonce = await provider.getTransactionCount(senderEthersWallet.address, 'latest');
+        
+        const tx = {
+            to: claimWallet.publicKey,
+            value: ethers.parseEther(airdropAmount.toString()),
+            nonce: nonce
+        };
+        
+        const transaction = await sendTransactionWithRetry(senderEthersWallet, tx);
+        
+        // Mark as claimed with transaction hash
+        await pool.query(
+            'UPDATE airdrop_claims SET claimed_by_user_id = $1, claimed_by_username = $2, claimed_at = NOW(), transaction_hash = $3 WHERE claim_token = $4',
+            [userId.toString(), username, transaction.hash, airdropToken]
+        );
+        
+        // Update airdrop claimed count
+        await pool.query(
+            'UPDATE airdrops SET claimed_count = claimed_count + 1 WHERE airdrop_id = $1',
+            [claim.airdrop_id]
+        );
+        
+        // Update amount
         claimWallet.amount = (claimWallet.amount || 0) + airdropAmount;
         await saveWallet(username, claimWallet, true);
         
         const message = `🎁 *Airdrop Claimed Successfully!*
 
 💰 Amount: ${airdropAmount.toFixed(6)} MON
+🔗 Transaction: [View on Explorer](${getTransactionLink(transaction.hash)})
 
 Your airdrop has been added to your claim wallet. Use /claim to view and manage your funds.`;
 
-        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, message, { 
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+        });
     } catch (error) {
         console.error('Airdrop claim error:', error);
-        await bot.sendMessage(chatId, "❌ Error processing airdrop claim. Please try again.");
+        await bot.sendMessage(chatId, `❌ Error processing airdrop claim: ${error.message}`);
     }
 }
 
@@ -1854,7 +1885,7 @@ This creates 10 links, each claimable for 0.5 MON (FCFS).`, { parse_mode: 'Markd
             links.push(`https://t.me/${botUsername}?start=airdrop_${claimToken}`);
         }
         
-        // Send links to creator in private
+        // Send links in the same chat where command was issued (group)
         const linksMessage = `🎁 *Airdrop Created Successfully!*
 
 💰 Amount per claim: ${amountPerClaim.toFixed(6)} MON
@@ -1868,11 +1899,10 @@ ${links.map((link, i) => `${i + 1}. ${link}`).join('\n')}
 Each link can be claimed once by any user. Share them wisely!`;
 
         try {
-            await bot.sendMessage(userId, linksMessage, { parse_mode: 'Markdown', disable_web_page_preview: true });
-            await bot.sendMessage(chatId, `✅ Airdrop created! Check your private messages for the claim links.`);
+            // Send links in the group where command was issued
+            await bot.sendMessage(chatId, linksMessage, { parse_mode: 'Markdown', disable_web_page_preview: true });
         } catch (error) {
-            // If can't send PM, send in group (not recommended for security)
-            await bot.sendMessage(chatId, `⚠️ I couldn't send you a private message. Please start a chat with me first, then try again.`);
+            await bot.sendMessage(chatId, `❌ Failed to send airdrop links: ${error.message}`);
             // Delete the airdrop
             await pool.query('DELETE FROM airdrops WHERE airdrop_id = $1', [airdropId]);
             await pool.query('DELETE FROM airdrop_claims WHERE airdrop_id = $1', [airdropId]);
