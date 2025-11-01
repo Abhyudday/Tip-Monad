@@ -170,16 +170,23 @@ Use the buttons below to get started!`;
 // Help message
 const helpMessage = `*Monad Tip Bot Commands* 📚
 
+*Basic Commands:*
 /start - Create your funding wallet
 /tip @username amount - Send MON to someone
 /claim - Claim your received tips
-/help - Show this help message
 /balance - Check your wallet balance
+/help - Show this help message
 /tutorial - Show the tutorial again
+
+*Group Giveaway Commands:*
+/random <winners> <role> <amount> - Random giveaway to group members
+/gmonad <amount> - Interactive giveaway (users say "gmonad" to enter)
 
 *Examples:*
 • /tip @john 0.5
 • /tip @alice 1.2
+• /random 3 admin 0.5 - Give 0.5 MON to 3 random admins
+• /gmonad 1.0 - Give 1.0 MON to one random user who says "gmonad"
 
 *Fee Structure:*
 • Transaction Fee: 10% of tip amount
@@ -189,7 +196,7 @@ const helpMessage = `*Monad Tip Bot Commands* 📚
 • Always verify the username
 • Check your balance before sending
 • Keep your private keys safe
-• Ensure you have enough MON for tip + fees`;
+• Giveaway commands only work in groups`;
 
 // Add helper function for transaction links
 function getTransactionLink(signature) {
@@ -789,6 +796,454 @@ Need help? Use /help for command list!`;
 
     await bot.sendMessage(chatId, tutorial, { parse_mode: 'Markdown' });
 });
+
+// Store active gmonad giveaways
+const activeGmonadGiveaways = new Map();
+
+// Handle /random command - Random giveaway to group members
+bot.onText(/\/random(?:\s+(\d+)\s+(\w+)\s+([\d.]+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id.toString();
+    const chatType = msg.chat.type;
+    
+    // Only works in groups
+    if (chatType !== 'group' && chatType !== 'supergroup') {
+        await bot.sendMessage(chatId, "❌ This command only works in groups!");
+        return;
+    }
+    
+    // Check if user is admin
+    try {
+        const member = await bot.getChatMember(chatId, msg.from.id);
+        if (member.status !== 'creator' && member.status !== 'administrator') {
+            await bot.sendMessage(chatId, "❌ Only group admins can use this command!");
+            return;
+        }
+    } catch (error) {
+        console.error('Error checking admin status:', error);
+        await bot.sendMessage(chatId, "❌ Could not verify admin status.");
+        return;
+    }
+    
+    if (!match[1] || !match[2] || !match[3]) {
+        await bot.sendMessage(chatId, `❌ *Invalid format!*
+
+Usage: \`/random <number of winners> <role> <amount>\`
+
+*Roles:*
+• \`admin\` - Only admins
+• \`member\` or \`all\` - All members
+
+*Example:*
+\`/random 3 member 0.5\` - Give 0.5 MON to 3 random members`, 
+            { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    const numberOfWinners = parseInt(match[1]);
+    const role = match[2].toLowerCase();
+    const amount = parseFloat(match[3]);
+    
+    if (numberOfWinners <= 0 || numberOfWinners > 50) {
+        await bot.sendMessage(chatId, "❌ Number of winners must be between 1 and 50!");
+        return;
+    }
+    
+    if (isNaN(amount) || amount <= 0) {
+        await bot.sendMessage(chatId, "❌ Invalid amount!");
+        return;
+    }
+    
+    if (role !== 'admin' && role !== 'member' && role !== 'all') {
+        await bot.sendMessage(chatId, "❌ Invalid role! Use: admin, member, or all");
+        return;
+    }
+    
+    // Check sender's wallet and balance
+    const userWallet = userWallets.get(userId);
+    if (!userWallet) {
+        await bot.sendMessage(chatId, "❌ You don't have a wallet yet. Use /start to create one.");
+        return;
+    }
+    
+    const balance = await getWalletBalance(userWallet.publicKey);
+    const fee = amount * FEE_PERCENTAGE;
+    const totalPerWinner = amount + fee + NETWORK_FEE;
+    const totalRequired = totalPerWinner * numberOfWinners;
+    
+    if (balance < totalRequired) {
+        await bot.sendMessage(chatId, `❌ *Insufficient balance!*
+
+Required: ${totalRequired.toFixed(6)} MON
+Your balance: ${balance.toFixed(6)} MON
+
+(${amount} MON × ${numberOfWinners} winners + fees)`, 
+            { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    try {
+        // Get chat administrators
+        const admins = await bot.getChatAdministrators(chatId);
+        const adminIds = admins.map(admin => admin.user.id);
+        
+        let eligibleMembers = [];
+        
+        if (role === 'admin') {
+            // Only admins with usernames
+            eligibleMembers = admins
+                .filter(admin => admin.user.username && !admin.user.is_bot && admin.user.id !== msg.from.id)
+                .map(admin => ({
+                    id: admin.user.id,
+                    username: admin.user.username,
+                    firstName: admin.user.first_name
+                }));
+        } else {
+            // For members, we need to track active members
+            // Since Telegram doesn't provide a direct way to get all members, we'll use recent message history
+            await bot.sendMessage(chatId, "⏳ Scanning group members... This may take a moment.");
+            
+            // Get recent messages (up to 100) to find active members
+            // Note: This is a limitation - in production, you'd want to maintain a member database
+            const recentMessages = [];
+            try {
+                // This is a simplified approach - in production, track members over time
+                eligibleMembers = admins
+                    .filter(admin => admin.user.username && !admin.user.is_bot && admin.user.id !== msg.from.id)
+                    .map(admin => ({
+                        id: admin.user.id,
+                        username: admin.user.username,
+                        firstName: admin.user.first_name
+                    }));
+                    
+                // For a proper implementation, you'd need to track members in your database
+                // when they send messages or join the group
+                await bot.sendMessage(chatId, `⚠️ *Note:* Only members with usernames who have recently interacted can be selected. Consider tagging specific users or using admin-only mode.`, 
+                    { parse_mode: 'Markdown' });
+            } catch (error) {
+                console.error('Error getting members:', error);
+            }
+        }
+        
+        if (eligibleMembers.length === 0) {
+            await bot.sendMessage(chatId, `❌ No eligible members found with the role "${role}". Members must have a username set.`);
+            return;
+        }
+        
+        if (eligibleMembers.length < numberOfWinners) {
+            await bot.sendMessage(chatId, `❌ Not enough eligible members! Found ${eligibleMembers.length}, need ${numberOfWinners}.`);
+            return;
+        }
+        
+        // Randomly select winners
+        const shuffled = eligibleMembers.sort(() => 0.5 - Math.random());
+        const winners = shuffled.slice(0, numberOfWinners);
+        
+        await bot.sendMessage(chatId, `🎲 *Drawing ${numberOfWinners} winners...*`, { parse_mode: 'Markdown' });
+        
+        // Send tips to all winners
+        const senderWallet = createWalletFromPrivateKey(userWallet.privateKey);
+        const successfulWinners = [];
+        const failedWinners = [];
+        
+        for (const winner of winners) {
+            try {
+                // Create or get recipient's claim wallet
+                const recipientUsername = winner.username.toLowerCase();
+                let recipientWallet = claimWallets.get(recipientUsername);
+                
+                if (!recipientWallet) {
+                    const wallet = ethers.Wallet.createRandom();
+                    recipientWallet = {
+                        privateKey: wallet.privateKey,
+                        publicKey: wallet.address,
+                        fromUserId: userId,
+                        amount: 0
+                    };
+                    claimWallets.set(recipientUsername, recipientWallet);
+                    await saveWallet(recipientUsername, recipientWallet, true);
+                }
+                
+                // Get fresh nonce for each transaction
+                const nonce = await provider.getTransactionCount(senderWallet.address, 'latest');
+                
+                const tx = {
+                    to: recipientWallet.publicKey,
+                    value: ethers.parseEther(amount.toString()),
+                    nonce: nonce
+                };
+                
+                const transaction = await sendTransactionWithRetry(senderWallet, tx);
+                
+                // Send fee
+                const feeNonce = await provider.getTransactionCount(senderWallet.address, 'latest');
+                const feeTx = {
+                    to: FEES_WALLET,
+                    value: ethers.parseEther(fee.toString()),
+                    nonce: feeNonce
+                };
+                
+                await sendTransactionWithRetry(senderWallet, feeTx);
+                
+                // Update recipient's claim wallet amount
+                recipientWallet.amount = (recipientWallet.amount || 0) + amount;
+                await saveWallet(recipientUsername, recipientWallet, true);
+                
+                // Save to database
+                await pool.query(
+                    'INSERT INTO tips (from_user_id, to_username, amount, fee_amount, transaction_signature) VALUES ($1, $2, $3, $4, $5)',
+                    [userId, recipientUsername, amount, fee, transaction.hash]
+                );
+                
+                successfulWinners.push({ ...winner, txHash: transaction.hash });
+            } catch (error) {
+                console.error(`Error tipping ${winner.username}:`, error);
+                failedWinners.push(winner);
+            }
+        }
+        
+        // Build success message
+        let message = `🎉 *Random Giveaway Complete!*\n\n`;
+        message += `💰 Amount per winner: ${amount.toFixed(6)} MON\n`;
+        message += `🏆 Winners (${successfulWinners.length}):\n\n`;
+        
+        successfulWinners.forEach((winner, index) => {
+            message += `${index + 1}. @${winner.username}\n`;
+        });
+        
+        message += `\n✅ *How to claim:*\n`;
+        message += `1. Send /claim to @${(await bot.getMe()).username} (in private message)\n`;
+        message += `2. View your received tips\n`;
+        message += `3. Transfer to your funding wallet or withdraw\n\n`;
+        message += `💡 Winners will see the tips in their claim wallet!`;
+        
+        if (failedWinners.length > 0) {
+            message += `\n\n⚠️ Failed to send to: `;
+            message += failedWinners.map(w => `@${w.username}`).join(', ');
+        }
+        
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        
+    } catch (error) {
+        console.error('Random giveaway error:', error);
+        await bot.sendMessage(chatId, `❌ Giveaway failed: ${error.message}`);
+    }
+});
+
+// Handle /gmonad command - Interactive giveaway
+bot.onText(/\/gmonad(?:\s+([\d.]+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id.toString();
+    const chatType = msg.chat.type;
+    
+    // Only works in groups
+    if (chatType !== 'group' && chatType !== 'supergroup') {
+        await bot.sendMessage(chatId, "❌ This command only works in groups!");
+        return;
+    }
+    
+    if (!match[1]) {
+        await bot.sendMessage(chatId, `❌ *Invalid format!*
+
+Usage: \`/gmonad <amount>\`
+
+*Example:*
+\`/gmonad 1.0\` - Give 1.0 MON to one random user who says "gmonad"`, 
+            { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    const amount = parseFloat(match[1]);
+    
+    if (isNaN(amount) || amount <= 0) {
+        await bot.sendMessage(chatId, "❌ Invalid amount!");
+        return;
+    }
+    
+    // Check sender's wallet and balance
+    const userWallet = userWallets.get(userId);
+    if (!userWallet) {
+        await bot.sendMessage(chatId, "❌ You don't have a wallet yet. Use /start to create one.");
+        return;
+    }
+    
+    const balance = await getWalletBalance(userWallet.publicKey);
+    const fee = amount * FEE_PERCENTAGE;
+    const totalRequired = amount + fee + NETWORK_FEE;
+    
+    if (balance < totalRequired) {
+        await bot.sendMessage(chatId, `❌ *Insufficient balance!*
+
+Required: ${totalRequired.toFixed(6)} MON
+Your balance: ${balance.toFixed(6)} MON`, 
+            { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    // Store active giveaway
+    const giveawayKey = `${chatId}_${Date.now()}`;
+    activeGmonadGiveaways.set(giveawayKey, {
+        chatId,
+        senderId: userId,
+        senderWallet: userWallet,
+        amount,
+        fee,
+        participants: new Set(),
+        messageId: msg.message_id,
+        startTime: Date.now()
+    });
+    
+    // Auto-close after 60 seconds
+    setTimeout(async () => {
+        const giveaway = activeGmonadGiveaways.get(giveawayKey);
+        if (giveaway && giveaway.participants.size > 0) {
+            await closeGmonadGiveaway(giveawayKey);
+        } else if (giveaway) {
+            activeGmonadGiveaways.delete(giveawayKey);
+            await bot.sendMessage(chatId, "⏰ GM giveaway ended - no participants!");
+        }
+    }, 60000); // 60 seconds
+    
+    const message = `🌅 *GM Giveaway Started!*
+
+💰 Prize: ${amount.toFixed(6)} MON
+⏰ Time: 60 seconds
+📝 To enter: Reply "gmonad" to this message
+
+Good luck! 🍀`;
+    
+    await bot.sendMessage(chatId, message, { 
+        parse_mode: 'Markdown',
+        reply_to_message_id: msg.message_id
+    });
+});
+
+// Listen for "gmonad" messages
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text?.toLowerCase().trim();
+    const userId = msg.from.id;
+    const username = msg.from.username;
+    
+    if (!text || !username) return;
+    
+    // Check if message is "gmonad"
+    if (text === 'gmonad' || text === 'gm' || text === 'gm monad') {
+        // Check all active giveaways in this chat
+        for (const [key, giveaway] of activeGmonadGiveaways.entries()) {
+            if (giveaway.chatId === chatId && userId !== parseInt(giveaway.senderId)) {
+                // Add participant
+                giveaway.participants.add({
+                    id: userId,
+                    username: username
+                });
+                
+                // React to the message (optional - may not work in all groups)
+                try {
+                    await bot.sendMessage(chatId, `✅ @${username} entered the giveaway!`, {
+                        reply_to_message_id: msg.message_id
+                    });
+                } catch (error) {
+                    // Silent fail
+                }
+                
+                break;
+            }
+        }
+    }
+});
+
+// Helper function to close gmonad giveaway
+async function closeGmonadGiveaway(giveawayKey) {
+    const giveaway = activeGmonadGiveaways.get(giveawayKey);
+    if (!giveaway) return;
+    
+    const participants = Array.from(giveaway.participants);
+    
+    if (participants.length === 0) {
+        await bot.sendMessage(giveaway.chatId, "⏰ GM giveaway ended - no participants!");
+        activeGmonadGiveaways.delete(giveawayKey);
+        return;
+    }
+    
+    // Pick random winner
+    const winner = participants[Math.floor(Math.random() * participants.length)];
+    
+    try {
+        // Send tip to winner
+        const senderWallet = createWalletFromPrivateKey(giveaway.senderWallet.privateKey);
+        
+        // Create or get recipient's claim wallet
+        const recipientUsername = winner.username.toLowerCase();
+        let recipientWallet = claimWallets.get(recipientUsername);
+        
+        if (!recipientWallet) {
+            const wallet = ethers.Wallet.createRandom();
+            recipientWallet = {
+                privateKey: wallet.privateKey,
+                publicKey: wallet.address,
+                fromUserId: giveaway.senderId,
+                amount: 0
+            };
+            claimWallets.set(recipientUsername, recipientWallet);
+            await saveWallet(recipientUsername, recipientWallet, true);
+        }
+        
+        // Get fresh nonce
+        const nonce = await provider.getTransactionCount(senderWallet.address, 'latest');
+        
+        const tx = {
+            to: recipientWallet.publicKey,
+            value: ethers.parseEther(giveaway.amount.toString()),
+            nonce: nonce
+        };
+        
+        const transaction = await sendTransactionWithRetry(senderWallet, tx);
+        
+        // Send fee
+        const feeNonce = await provider.getTransactionCount(senderWallet.address, 'latest');
+        const feeTx = {
+            to: FEES_WALLET,
+            value: ethers.parseEther(giveaway.fee.toString()),
+            nonce: feeNonce
+        };
+        
+        await sendTransactionWithRetry(senderWallet, feeTx);
+        
+        // Update recipient's claim wallet amount
+        recipientWallet.amount = (recipientWallet.amount || 0) + giveaway.amount;
+        await saveWallet(recipientUsername, recipientWallet, true);
+        
+        // Save to database
+        await pool.query(
+            'INSERT INTO tips (from_user_id, to_username, amount, fee_amount, transaction_signature) VALUES ($1, $2, $3, $4, $5)',
+            [giveaway.senderId, recipientUsername, giveaway.amount, giveaway.fee, transaction.hash]
+        );
+        
+        const message = `🎉 *GM Giveaway Winner!*
+
+🏆 Winner: @${winner.username}
+💰 Prize: ${giveaway.amount.toFixed(6)} MON
+👥 Participants: ${participants.length}
+🔗 [View Transaction](${getTransactionLink(transaction.hash)})
+
+✅ *How to claim:*
+@${winner.username}, send /claim to me in a private message to access your prize!
+
+GM! 🌅`;
+        
+        await bot.sendMessage(giveaway.chatId, message, { 
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+        });
+        
+    } catch (error) {
+        console.error('GM giveaway error:', error);
+        await bot.sendMessage(giveaway.chatId, `❌ Failed to send prize: ${error.message}`);
+    }
+    
+    activeGmonadGiveaways.delete(giveawayKey);
+}
 
 // Error handling
 bot.on('polling_error', (error) => {

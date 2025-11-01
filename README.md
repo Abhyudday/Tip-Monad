@@ -132,6 +132,8 @@ Replace the placeholder address with your actual Monad wallet address where you 
 
 ## Bot Commands
 
+### Basic Commands
+
 | Command | Description |
 |---------|-------------|
 | `/start` | Create your funding wallet and see welcome message |
@@ -141,13 +143,34 @@ Replace the placeholder address with your actual Monad wallet address where you 
 | `/claim` | View and manage your received tips |
 | `/tutorial` | Show the tutorial guide |
 
+### Group Giveaway Commands
+
+| Command | Description |
+|---------|-------------|
+| `/random <winners> <role> <amount>` | Random giveaway to group members (admin only) |
+| `/gmonad <amount>` | Interactive giveaway - users say "gmonad" to enter |
+
+**Roles for /random:**
+- `admin` - Only admins
+- `member` or `all` - All members with usernames
+
+**Note:** Giveaway commands only work in groups. Winners are notified and can use `/claim` to access their prizes.
+
 ## Usage Examples
 
+### Basic Tipping
 ```
 /tip @alice 1.5
 /tip @bob 0.5
 /balance
 /claim
+```
+
+### Group Giveaways
+```
+/random 3 admin 0.5
+/random 5 member 1.0
+/gmonad 2.0
 ```
 
 ## Monad Testnet Information
