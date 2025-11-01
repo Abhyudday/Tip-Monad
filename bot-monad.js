@@ -229,6 +229,32 @@ initializeDatabase().then(() => {
     loadWallets();
 });
 
+// Set up bot commands for autocomplete
+async function setupBotCommands() {
+    try {
+        const commands = [
+            { command: 'start', description: 'Create your wallet and get started' },
+            { command: 'balance', description: 'Check your wallet balance' },
+            { command: 'pay', description: 'Send MON to someone (@username amount)' },
+            { command: 'claim', description: 'Claim your received payments' },
+            { command: 'help', description: 'Show help and FAQ' },
+            { command: 'tutorial', description: 'Show the tutorial again' },
+            { command: 'random', description: 'Random giveaway to group members' },
+            { command: 'gmonad', description: 'Interactive giveaway (users say "gmonad")' },
+            { command: 'airdrop', description: 'Create an airdrop campaign' },
+            { command: 'recurring', description: 'Set up recurring payments' }
+        ];
+        
+        await bot.setMyCommands(commands);
+        console.log('Bot commands registered successfully');
+    } catch (error) {
+        console.error('Error setting up bot commands:', error);
+    }
+}
+
+// Call setupBotCommands after bot initialization
+setupBotCommands();
+
 // Function to get wallet balance
 async function getWalletBalance(address) {
     try {
