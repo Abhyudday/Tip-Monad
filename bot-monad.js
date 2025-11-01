@@ -28,6 +28,29 @@ const FEES_WALLET = '0x0000000000000000000000000000000000000000'; // TODO: Repla
 const FEE_PERCENTAGE = 0.10; // 10% fee per transaction
 const NETWORK_FEE = 0.000005; // ~0.000005 MON per transaction
 
+// Helper function to send transaction with retry logic
+async function sendTransactionWithRetry(wallet, tx, maxRetries = 3) {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const transaction = await wallet.sendTransaction(tx);
+            await transaction.wait();
+            return transaction;
+        } catch (error) {
+            if (i === maxRetries - 1) throw error;
+            
+            // If nonce error, refresh nonce and retry
+            if (error.message.includes('nonce') || error.message.includes('priority')) {
+                console.log(`Nonce error, retrying... (attempt ${i + 1}/${maxRetries})`);
+                const newNonce = await provider.getTransactionCount(wallet.address, 'latest');
+                tx.nonce = newNonce;
+                await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+            } else {
+                throw error;
+            }
+        }
+    }
+}
+
 // Create tables if they don't exist
 async function initializeDatabase() {
     try {
@@ -640,24 +663,28 @@ bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
         // Send tip
         const senderWallet = createWalletFromPrivateKey(userWallet.privateKey);
         
+        // Get current nonce
+        let nonce = await provider.getTransactionCount(senderWallet.address, 'latest');
+        
         const tx = {
             to: recipientWallet.publicKey,
-            value: ethers.parseEther(amount.toString())
+            value: ethers.parseEther(amount.toString()),
+            nonce: nonce
         };
 
-        const transaction = await senderWallet.sendTransaction(tx);
+        const transaction = await sendTransactionWithRetry(senderWallet, tx);
         
-        // Send fee
+        // Get fresh nonce for fee transaction
+        const feeNonce = await provider.getTransactionCount(senderWallet.address, 'latest');
+        
+        // Send fee with fresh nonce
         const feeTx = {
             to: FEES_WALLET,
-            value: ethers.parseEther(fee.toString())
+            value: ethers.parseEther(fee.toString()),
+            nonce: feeNonce
         };
 
-        const feeTransaction = await senderWallet.sendTransaction(feeTx);
-        
-        // Wait for confirmations
-        await transaction.wait();
-        await feeTransaction.wait();
+        const feeTransaction = await sendTransactionWithRetry(senderWallet, feeTx);
         
         // Update recipient's claim wallet amount
         recipientWallet.amount = (recipientWallet.amount || 0) + amount;
