@@ -1,0 +1,31 @@
+{
+  "name": "monad-tip-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for tipping on Monad testnet",
+  "main": "bot-monad.js",
+  "scripts": {
+    "start": "node bot-monad.js",
+    "dev": "nodemon bot-monad.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "monad",
+    "blockchain",
+    "tip",
+    "cryptocurrency"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.64.0",
+    "ethers": "^6.9.0",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
