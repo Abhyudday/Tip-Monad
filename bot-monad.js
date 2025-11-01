@@ -27,7 +27,6 @@ let claimWallets = new Map();
 const FEES_WALLET = '0x0000000000000000000000000000000000000000'; // TODO: Replace with actual fee wallet
 const FEE_PERCENTAGE = 0.10; // 10% fee per transaction
 const NETWORK_FEE = 0.000005; // ~0.000005 MON per transaction
-const PARTICIPANT_TTL = 1000 * 60 * 60 * 24; // Track participants for 24 hours
 
 // Rate limiting helper
 let lastRpcCall = 0;
@@ -233,15 +232,6 @@ const helpMessage = `*Monad Tip Bot Commands* 📚
 // Add helper function for transaction links
 function getTransactionLink(signature) {
     return `https://testnet.monadexplorer.com/tx/${signature}`;
-}
-
-function pickRandomElements(array, count) {
-    const copy = [...array];
-    for (let i = copy.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [copy[i], copy[j]] = [copy[j], copy[i]];
-    }
-    return copy.slice(0, count);
 }
 
 // Add helper function for transaction status check
@@ -1134,8 +1124,12 @@ Your balance: ${balance.toFixed(6)} MON
             return;
         }
         
-        // Randomly select winners
-        const shuffled = eligibleMembers.sort(() => 0.5 - Math.random());
+        // Randomly select winners using Fisher-Yates shuffle
+        const shuffled = [...eligibleMembers];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
         const winners = shuffled.slice(0, numberOfWinners);
         
         await bot.sendMessage(chatId, `🎲 *Drawing ${numberOfWinners} winners...*`, { parse_mode: 'Markdown' });
