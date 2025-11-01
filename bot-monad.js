@@ -42,13 +42,27 @@ async function rateLimitedDelay() {
 }
 
 // Helper function to send transaction with retry logic
-async function sendTransactionWithRetry(wallet, tx, maxRetries = 3) {
+async function sendTransactionWithRetry(wallet, tx, options = {}) {
+    const { maxRetries = 3, onSent, onConfirming, onConfirmed } = options;
+
+    const invokeCallback = async (callback, transaction) => {
+        if (!callback) return;
+        try {
+            await callback(transaction);
+        } catch (callbackError) {
+            console.error('Callback error in sendTransactionWithRetry:', callbackError);
+        }
+    };
+
     for (let i = 0; i < maxRetries; i++) {
         try {
             await rateLimitedDelay();
             const transaction = await wallet.sendTransaction(tx);
+            await invokeCallback(onSent, transaction);
             await rateLimitedDelay();
+            await invokeCallback(onConfirming, transaction);
             await transaction.wait();
+            await invokeCallback(onConfirmed, transaction);
             return transaction;
         } catch (error) {
             if (i === maxRetries - 1) throw error;
@@ -752,7 +766,8 @@ bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
         await bot.sendMessage(chatId, `❌ Insufficient balance!\n\nRequired: ${totalRequired.toFixed(6)} MON\nYour balance: ${balance.toFixed(6)} MON\n\nPlease fund your wallet.`);
         return;
     }
-    
+    let setStatus = null;
+
     try {
         // Create or get recipient's claim wallet
         let recipientWallet = claimWallets.get(recipientUsername);
@@ -771,6 +786,63 @@ bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
         // Send tip
         const senderWallet = createWalletFromPrivateKey(userWallet.privateKey);
         
+        const status = {
+            sent: false,
+            confirming: false,
+            success: false,
+            failed: false,
+            errorMessage: '',
+            txHash: null
+        };
+
+        const buildStatusText = () => {
+            const lines = [
+                '🔄 *Tip Status*',
+                `Recipient: @${recipientUsername}`,
+                `Amount: ${amount.toFixed(6)} MON`
+            ];
+            if ((status.success || status.failed) && status.txHash) {
+                lines.push(`Tx: [View transaction](${getTransactionLink(status.txHash)})`);
+            }
+            lines.push('');
+            lines.push(`${status.failed ? '❌' : status.sent ? '✅' : '⏳'} Sending transaction`);
+            lines.push(`${status.failed ? '❌' : status.success ? '✅' : status.confirming ? '⏳' : '○'} Confirming on-chain`);
+            if (status.failed) {
+                lines.push(`❌ Tip failed: ${status.errorMessage}`);
+            } else if (status.success) {
+                lines.push('✅ Tip successful!');
+            } else {
+                lines.push('○ Tip successful!');
+            }
+            return lines.join('\n');
+        };
+
+        const statusMessage = await bot.sendMessage(chatId, buildStatusText(), {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+        });
+
+        const updateStatusMessage = async () => {
+            try {
+                await bot.editMessageText(buildStatusText(), {
+                    chat_id: chatId,
+                    message_id: statusMessage.message_id,
+                    parse_mode: 'Markdown',
+                    disable_web_page_preview: true
+                });
+            } catch (statusError) {
+                const description = statusError?.response?.body?.description || '';
+                if (!description.includes('message is not modified')) {
+                    console.error('Error updating status message:', statusError);
+                }
+            }
+        };
+
+        setStatus = async (changes) => {
+            Object.assign(status, changes);
+            await updateStatusMessage();
+        };
+        
         // Get current nonce
         await rateLimitedDelay();
         let nonce = await provider.getTransactionCount(senderWallet.address, 'latest');
@@ -781,7 +853,17 @@ bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
             nonce: nonce
         };
 
-        const transaction = await sendTransactionWithRetry(senderWallet, tx);
+        const transaction = await sendTransactionWithRetry(senderWallet, tx, {
+            onSent: async (txResponse) => {
+                await setStatus({ sent: true, confirming: true, txHash: txResponse.hash });
+            },
+            onConfirming: async () => {
+                await setStatus({ confirming: true });
+            },
+            onConfirmed: async (txResponse) => {
+                await setStatus({ confirming: false, success: true, txHash: txResponse.hash });
+            }
+        });
         
         // Get fresh nonce for fee transaction
         await rateLimitedDelay();
@@ -822,6 +904,9 @@ The recipient can use /claim to receive their tip!`;
         
     } catch (error) {
         console.error('Tip error:', error);
+        if (setStatus) {
+            await setStatus({ failed: true, confirming: false, sent: !!status?.sent, errorMessage: error.message });
+        }
         await bot.sendMessage(chatId, `❌ Failed to send tip: ${error.message}`);
     }
 });
