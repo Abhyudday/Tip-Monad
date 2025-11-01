@@ -111,6 +111,53 @@ async function initializeDatabase() {
                 transaction_signature TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            
+            CREATE TABLE IF NOT EXISTS claim_links (
+                id SERIAL PRIMARY KEY,
+                claim_token TEXT UNIQUE NOT NULL,
+                recipient_username TEXT NOT NULL,
+                amount DECIMAL NOT NULL,
+                from_user_id TEXT NOT NULL,
+                claimed BOOLEAN DEFAULT FALSE,
+                transaction_hash TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                claimed_at TIMESTAMP
+            );
+            
+            CREATE TABLE IF NOT EXISTS recurring_payments (
+                id SERIAL PRIMARY KEY,
+                from_user_id TEXT NOT NULL,
+                to_username TEXT NOT NULL,
+                amount DECIMAL NOT NULL,
+                schedule_type TEXT NOT NULL,
+                schedule_value TEXT NOT NULL,
+                schedule_time TEXT,
+                end_date TIMESTAMP,
+                active BOOLEAN DEFAULT TRUE,
+                last_executed TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE TABLE IF NOT EXISTS airdrops (
+                id SERIAL PRIMARY KEY,
+                airdrop_id TEXT UNIQUE NOT NULL,
+                from_user_id TEXT NOT NULL,
+                amount_per_claim DECIMAL NOT NULL,
+                total_claims INTEGER NOT NULL,
+                claimed_count INTEGER DEFAULT 0,
+                active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE TABLE IF NOT EXISTS airdrop_claims (
+                id SERIAL PRIMARY KEY,
+                airdrop_id TEXT NOT NULL,
+                claim_token TEXT UNIQUE NOT NULL,
+                claimed_by_user_id TEXT,
+                claimed_by_username TEXT,
+                transaction_hash TEXT,
+                claimed_at TIMESTAMP
+            );
         `);
         
         // Add telegram_user_id column if it doesn't exist (migration)
@@ -199,6 +246,11 @@ function createWalletFromPrivateKey(privateKey) {
     return new ethers.Wallet(privateKey, provider);
 }
 
+// Helper function to generate unique claim token
+function generateClaimToken() {
+    return require('crypto').randomBytes(16).toString('hex');
+}
+
 // Welcome message with tutorial
 const welcomeMessage = `🎉 *Welcome to Monad Tip Bot!* 🎉
 
@@ -277,6 +329,17 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
         const botUsername = (await bot.getMe()).username;
         await bot.sendMessage(chatId, `❌ Please use /start in a private message with @${botUsername}!`);
         return;
+    }
+    
+    // Handle claim links and airdrop links
+    if (startParam) {
+        if (startParam.startsWith('claim_')) {
+            const claimToken = startParam.substring(6);
+            return handleClaimLink(chatId, userId, username, claimToken);
+        } else if (startParam.startsWith('airdrop_')) {
+            const airdropToken = startParam.substring(8);
+            return handleAirdropClaim(chatId, userId, username, airdropToken);
+        }
     }
     
     // Send welcome message with buttons
@@ -904,13 +967,24 @@ bot.onText(/\/pay (@\w+) (.+)/, async (msg, match) => {
         // Send notification to recipient
         try {
             const senderUsername = msg.from.username || msg.from.first_name || 'Someone';
+            
+            // Generate unique claim link
+            const claimToken = generateClaimToken();
+            await pool.query(
+                'INSERT INTO claim_links (claim_token, recipient_username, amount, from_user_id) VALUES ($1, $2, $3, $4)',
+                [claimToken, recipientUsername, amount, userId]
+            );
+            
+            const botUsername = (await bot.getMe()).username;
+            const claimLink = `https://t.me/${botUsername}?start=claim_${claimToken}`;
+            
             const recipientNotification = `🎉 *You received a payment!*
 
 💰 Amount: ${amount.toFixed(6)} MON
 👤 From: @${senderUsername}
 🔗 [View Transaction](${getTransactionLink(transaction.hash)})
 
-Use /claim to access your payment!`;
+Click the button below to claim your payment!`;
 
             let recipientUserId = null;
             
@@ -937,17 +1011,28 @@ Use /claim to access your payment!`;
             }
             
             if (recipientUserId) {
-                // Send direct message to recipient
+                // Send direct message to recipient with claim button
                 await bot.sendMessage(recipientUserId, recipientNotification, {
                     parse_mode: 'Markdown',
-                    disable_web_page_preview: true
+                    disable_web_page_preview: true,
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: '💰 Claim Payment', url: claimLink }
+                        ]]
+                    }
                 }).catch((error) => {
                     console.log(`Could not send direct notification to @${recipientUsername}: ${error.message}`);
                 });
             } else {
-                // Send notification in the group chat mentioning the user
-                const groupNotification = `🎉 @${recipientUsername} you received a payment of ${amount.toFixed(6)} MON from @${senderUsername}!\n\nUse /claim in a private message with me to access your payment!`;
-                await bot.sendMessage(chatId, groupNotification).catch((error) => {
+                // Send notification in the group chat mentioning the user with claim button
+                const groupNotification = `🎉 @${recipientUsername} you received a payment of ${amount.toFixed(6)} MON from @${senderUsername}!\n\nClick the button below to claim your payment!`;
+                await bot.sendMessage(chatId, groupNotification, {
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: '💰 Claim Payment', url: claimLink }
+                        ]]
+                    }
+                }).catch((error) => {
                     console.log(`Could not send group notification: ${error.message}`);
                 });
             }
@@ -1068,6 +1153,164 @@ Need help? Use /help for command list!`;
 
     await bot.sendMessage(chatId, tutorial, { parse_mode: 'Markdown' });
 });
+
+// Handle claim link
+async function handleClaimLink(chatId, userId, username, claimToken) {
+    try {
+        if (!username) {
+            await bot.sendMessage(chatId, "❌ You need to set a Telegram username to claim payments.");
+            return;
+        }
+        
+        // Get claim link details
+        const claimData = await pool.query(
+            'SELECT * FROM claim_links WHERE claim_token = $1',
+            [claimToken]
+        );
+        
+        if (claimData.rows.length === 0) {
+            await bot.sendMessage(chatId, "❌ Invalid or expired claim link.");
+            return;
+        }
+        
+        const claim = claimData.rows[0];
+        
+        // Check if already claimed
+        if (claim.claimed) {
+            await bot.sendMessage(chatId, "❌ This payment has already been claimed.");
+            return;
+        }
+        
+        // Verify the username matches
+        if (claim.recipient_username !== username) {
+            await bot.sendMessage(chatId, `❌ This payment is for @${claim.recipient_username} only. You cannot claim it.`);
+            return;
+        }
+        
+        // Mark as claimed
+        await pool.query(
+            'UPDATE claim_links SET claimed = TRUE, claimed_at = NOW() WHERE claim_token = $1',
+            [claimToken]
+        );
+        
+        // Get or create claim wallet
+        let claimWallet = claimWallets.get(username);
+        if (!claimWallet) {
+            const wallet = ethers.Wallet.createRandom();
+            claimWallet = {
+                privateKey: wallet.privateKey,
+                publicKey: wallet.address,
+                fromUserId: claim.from_user_id,
+                amount: 0
+            };
+            claimWallets.set(username, claimWallet);
+            await saveWallet(username, claimWallet, true);
+        }
+        
+        // Update amount
+        claimWallet.amount = (claimWallet.amount || 0) + parseFloat(claim.amount);
+        await saveWallet(username, claimWallet, true);
+        
+        const message = `✅ *Payment Claimed Successfully!*
+
+💰 Amount: ${parseFloat(claim.amount).toFixed(6)} MON
+
+Your payment has been added to your claim wallet. Use /claim to view and manage your funds.`;
+
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('Claim link error:', error);
+        await bot.sendMessage(chatId, "❌ Error processing claim. Please try again.");
+    }
+}
+
+// Handle airdrop claim
+async function handleAirdropClaim(chatId, userId, username, airdropToken) {
+    try {
+        if (!username) {
+            await bot.sendMessage(chatId, "❌ You need to set a Telegram username to claim airdrops.");
+            return;
+        }
+        
+        // Get airdrop details
+        const airdropData = await pool.query(
+            'SELECT ac.*, a.amount_per_claim, a.total_claims, a.claimed_count, a.active FROM airdrop_claims ac JOIN airdrops a ON ac.airdrop_id = a.airdrop_id WHERE ac.claim_token = $1',
+            [airdropToken]
+        );
+        
+        if (airdropData.rows.length === 0) {
+            await bot.sendMessage(chatId, "❌ Invalid airdrop link.");
+            return;
+        }
+        
+        const claim = airdropData.rows[0];
+        
+        // Check if airdrop is active
+        if (!claim.active) {
+            await bot.sendMessage(chatId, "❌ This airdrop has ended.");
+            return;
+        }
+        
+        // Check if already claimed
+        if (claim.claimed_by_user_id) {
+            await bot.sendMessage(chatId, "❌ This airdrop link has already been claimed.");
+            return;
+        }
+        
+        // Check if user has already claimed from this airdrop
+        const userClaims = await pool.query(
+            'SELECT * FROM airdrop_claims WHERE airdrop_id = $1 AND claimed_by_user_id = $2',
+            [claim.airdrop_id, userId.toString()]
+        );
+        
+        if (userClaims.rows.length > 0) {
+            await bot.sendMessage(chatId, "❌ You have already claimed from this airdrop.");
+            return;
+        }
+        
+        // Mark as claimed
+        await pool.query(
+            'UPDATE airdrop_claims SET claimed_by_user_id = $1, claimed_by_username = $2, claimed_at = NOW() WHERE claim_token = $3',
+            [userId.toString(), username, airdropToken]
+        );
+        
+        // Update airdrop claimed count
+        await pool.query(
+            'UPDATE airdrops SET claimed_count = claimed_count + 1 WHERE airdrop_id = $1',
+            [claim.airdrop_id]
+        );
+        
+        // Get or create claim wallet
+        let claimWallet = claimWallets.get(username);
+        if (!claimWallet) {
+            const wallet = ethers.Wallet.createRandom();
+            claimWallet = {
+                privateKey: wallet.privateKey,
+                publicKey: wallet.address,
+                fromUserId: claim.from_user_id,
+                amount: 0
+            };
+            claimWallets.set(username, claimWallet);
+            await saveWallet(username, claimWallet, true);
+        }
+        
+        // Update amount
+        const airdropAmount = parseFloat(claim.amount_per_claim);
+        claimWallet.amount = (claimWallet.amount || 0) + airdropAmount;
+        await saveWallet(username, claimWallet, true);
+        
+        const message = `🎁 *Airdrop Claimed Successfully!*
+
+💰 Amount: ${airdropAmount.toFixed(6)} MON
+
+Your airdrop has been added to your claim wallet. Use /claim to view and manage your funds.`;
+
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('Airdrop claim error:', error);
+        await bot.sendMessage(chatId, "❌ Error processing airdrop claim. Please try again.");
+    }
+}
 
 // Store active gmonad giveaways
 const activeGmonadGiveaways = new Map();
@@ -1524,6 +1767,221 @@ GM! 🌅`;
     
     activeGmonadGiveaways.delete(giveawayKey);
 }
+
+// Handle /airdrop command
+bot.onText(/\/airdrop(?:\s+([\d.]+)\s+(\d+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id.toString();
+    const chatType = msg.chat.type;
+    
+    // Only works in groups
+    if (chatType !== 'group' && chatType !== 'supergroup') {
+        await bot.sendMessage(chatId, "❌ This command only works in groups!");
+        return;
+    }
+    
+    // Check if user is admin
+    try {
+        const admins = await bot.getChatAdministrators(chatId);
+        const isAdmin = admins.some(admin => admin.user.id === parseInt(userId));
+        
+        if (!isAdmin) {
+            await bot.sendMessage(chatId, "❌ Only group admins can create airdrops!");
+            return;
+        }
+    } catch (error) {
+        await bot.sendMessage(chatId, "❌ Could not verify admin status. Make sure the bot is an admin.");
+        return;
+    }
+    
+    if (!match[1] || !match[2]) {
+        await bot.sendMessage(chatId, `❌ *Invalid format!*
+
+Usage: \`/airdrop <amount per person> <number of links>\`
+
+Example: \`/airdrop 0.5 10\`
+This creates 10 links, each claimable for 0.5 MON (FCFS).`, { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    const amountPerClaim = parseFloat(match[1]);
+    const numberOfLinks = parseInt(match[2]);
+    
+    if (isNaN(amountPerClaim) || amountPerClaim <= 0) {
+        await bot.sendMessage(chatId, "❌ Invalid amount. Please enter a valid number.");
+        return;
+    }
+    
+    if (isNaN(numberOfLinks) || numberOfLinks <= 0 || numberOfLinks > 100) {
+        await bot.sendMessage(chatId, "❌ Number of links must be between 1 and 100.");
+        return;
+    }
+    
+    // Check user wallet exists
+    const userWallet = userWallets.get(userId);
+    if (!userWallet) {
+        await bot.sendMessage(chatId, "❌ Please create a wallet first using /start in private chat.");
+        return;
+    }
+    
+    // Check balance
+    const balance = await getWalletBalance(userWallet.publicKey);
+    const totalRequired = amountPerClaim * numberOfLinks + NETWORK_FEE;
+    
+    if (balance < totalRequired) {
+        await bot.sendMessage(chatId, `❌ Insufficient balance!\n\nRequired: ${totalRequired.toFixed(6)} MON\nYour balance: ${balance.toFixed(6)} MON`);
+        return;
+    }
+    
+    try {
+        // Create airdrop
+        const airdropId = generateClaimToken();
+        await pool.query(
+            'INSERT INTO airdrops (airdrop_id, from_user_id, amount_per_claim, total_claims) VALUES ($1, $2, $3, $4)',
+            [airdropId, userId, amountPerClaim, numberOfLinks]
+        );
+        
+        // Create claim links
+        const botUsername = (await bot.getMe()).username;
+        const links = [];
+        
+        for (let i = 0; i < numberOfLinks; i++) {
+            const claimToken = generateClaimToken();
+            await pool.query(
+                'INSERT INTO airdrop_claims (airdrop_id, claim_token) VALUES ($1, $2)',
+                [airdropId, claimToken]
+            );
+            links.push(`https://t.me/${botUsername}?start=airdrop_${claimToken}`);
+        }
+        
+        // Send links to creator in private
+        const linksMessage = `🎁 *Airdrop Created Successfully!*
+
+💰 Amount per claim: ${amountPerClaim.toFixed(6)} MON
+🔗 Total links: ${numberOfLinks}
+📊 Total locked: ${(amountPerClaim * numberOfLinks).toFixed(6)} MON
+
+Here are your airdrop links (FCFS - First Come First Served):
+
+${links.map((link, i) => `${i + 1}. ${link}`).join('\n')}
+
+Each link can be claimed once by any user. Share them wisely!`;
+
+        try {
+            await bot.sendMessage(userId, linksMessage, { parse_mode: 'Markdown', disable_web_page_preview: true });
+            await bot.sendMessage(chatId, `✅ Airdrop created! Check your private messages for the claim links.`);
+        } catch (error) {
+            // If can't send PM, send in group (not recommended for security)
+            await bot.sendMessage(chatId, `⚠️ I couldn't send you a private message. Please start a chat with me first, then try again.`);
+            // Delete the airdrop
+            await pool.query('DELETE FROM airdrops WHERE airdrop_id = $1', [airdropId]);
+            await pool.query('DELETE FROM airdrop_claims WHERE airdrop_id = $1', [airdropId]);
+        }
+    } catch (error) {
+        console.error('Airdrop creation error:', error);
+        await bot.sendMessage(chatId, `❌ Failed to create airdrop: ${error.message}`);
+    }
+});
+
+// Handle /recurring command
+bot.onText(/\/recurring(?:\s+@(\w+)\s+([\d.]+)\s+every\s+(.+?)\s+until\s+(.+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id.toString();
+    
+    if (!match[1] || !match[2] || !match[3] || !match[4]) {
+        await bot.sendMessage(chatId, `❌ *Invalid format!*
+
+Usage: \`/recurring @username <amount> every <schedule> until <end date>\`
+
+Examples:
+• \`/recurring @alice 0.1 every Friday 9pm until 04/10/2025\`
+• \`/recurring @bob 0.5 every Monday until 12/31/2025\`
+• \`/recurring @charlie 1.0 every day until 05/15/2025\`
+
+Note: Recurring payments will be executed automatically based on the schedule.`, { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    const recipientUsername = match[1].toLowerCase();
+    const amount = parseFloat(match[2]);
+    const schedule = match[3].trim();
+    const endDateStr = match[4].trim();
+    
+    if (isNaN(amount) || amount <= 0) {
+        await bot.sendMessage(chatId, "❌ Invalid amount. Please enter a valid number.");
+        return;
+    }
+    
+    // Check user wallet exists
+    const userWallet = userWallets.get(userId);
+    if (!userWallet) {
+        await bot.sendMessage(chatId, "❌ Please create a wallet first using /start.");
+        return;
+    }
+    
+    // Parse schedule
+    let scheduleType = 'weekly';
+    let scheduleValue = schedule.toLowerCase();
+    let scheduleTime = null;
+    
+    if (schedule.toLowerCase().includes('day')) {
+        scheduleType = 'daily';
+    } else if (schedule.toLowerCase().includes('week')) {
+        scheduleType = 'weekly';
+    } else if (schedule.toLowerCase().includes('month')) {
+        scheduleType = 'monthly';
+    }
+    
+    // Extract time if present
+    const timeMatch = schedule.match(/(\d+)(am|pm)/i);
+    if (timeMatch) {
+        scheduleTime = timeMatch[0];
+        scheduleValue = schedule.replace(timeMatch[0], '').trim();
+    }
+    
+    // Parse end date (MM/DD/YYYY format)
+    let endDate;
+    try {
+        const [month, day, year] = endDateStr.split('/');
+        endDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+        
+        if (isNaN(endDate.getTime())) {
+            throw new Error('Invalid date');
+        }
+        
+        if (endDate <= new Date()) {
+            await bot.sendMessage(chatId, "❌ End date must be in the future!");
+            return;
+        }
+    } catch (error) {
+        await bot.sendMessage(chatId, "❌ Invalid date format. Please use MM/DD/YYYY format (e.g., 04/10/2025).");
+        return;
+    }
+    
+    try {
+        // Create recurring payment
+        await pool.query(
+            'INSERT INTO recurring_payments (from_user_id, to_username, amount, schedule_type, schedule_value, schedule_time, end_date) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+            [userId, recipientUsername, amount, scheduleType, scheduleValue, scheduleTime, endDate]
+        );
+        
+        const message = `✅ *Recurring Payment Created!*
+
+👤 To: @${recipientUsername}
+💰 Amount: ${amount.toFixed(6)} MON
+📅 Schedule: ${schedule}
+🏁 Until: ${endDateStr}
+
+Your recurring payment has been set up. The first payment will be processed on the next scheduled time.
+
+Note: Make sure you have sufficient balance in your funding wallet for each payment.`;
+
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('Recurring payment creation error:', error);
+        await bot.sendMessage(chatId, `❌ Failed to create recurring payment: ${error.message}`);
+    }
+});
 
 // Error handling
 bot.on('polling_error', (error) => {
