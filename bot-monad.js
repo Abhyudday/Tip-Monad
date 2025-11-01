@@ -231,7 +231,7 @@ const helpMessage = `*Monad Tip Bot Commands* 📚
 
 // Add helper function for transaction links
 function getTransactionLink(signature) {
-    return `https://testnet.monad.xyz/tx/${signature}`;
+    return `https://testnet.monadexplorer.com/tx/${signature}`;
 }
 
 // Add helper function for transaction status check
