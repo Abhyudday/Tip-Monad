@@ -9,7 +9,7 @@ const { Pool } = require('pg');
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 // Connect to Monad testnet
-const provider = new ethers.JsonRpcProvider('https://testnet.monad.xyz/');
+const provider = new ethers.JsonRpcProvider('https://testnet-rpc.monad.xyz/');
 
 // Initialize PostgreSQL connection with environment variable
 const pool = new Pool({

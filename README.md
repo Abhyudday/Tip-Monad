@@ -153,11 +153,11 @@ Replace the placeholder address with your actual Monad wallet address where you 
 ## Monad Testnet Information
 
 - **Network**: Monad Testnet
-- **RPC URL**: https://testnet.monad.xyz/
-- **Chain ID**: Check Monad documentation
-- **Explorer**: https://testnet.monad.xyz/
+- **RPC URL**: https://testnet-rpc.monad.xyz/
+- **Chain ID**: 10143
+- **Explorer**: https://testnet.monadexplorer.com/
 
-To get testnet MON tokens, check the Monad Discord or testnet faucet.
+To get testnet MON tokens, visit the [Monad Faucet](https://faucet.monad.xyz/) or check the Monad Discord.
 
 ## Database Schema
 
