@@ -203,8 +203,8 @@ const helpMessage = `*Monad Tip Bot Commands* 📚
 
 *Basic Commands:*
 /start - Create your funding wallet
-/tip @username amount - Send MON to someone
-/claim - Claim your received tips
+/pay @username amount - Send MON to someone
+/claim - Claim your received payments
 /balance - Check your wallet balance
 /help - Show this help message
 /tutorial - Show the tutorial again
@@ -214,8 +214,8 @@ const helpMessage = `*Monad Tip Bot Commands* 📚
 /gmonad <amount> - Interactive giveaway (users say "gmonad" to enter)
 
 *Examples:*
-• /tip @john 0.5
-• /tip @alice 1.2
+• /pay @john 0.5
+• /pay @alice 1.2
 • /random 3 admin 0.5 - Give 0.5 MON to 3 random admins
 • /gmonad 1.0 - Give 1.0 MON to one random user who says "gmonad"
 
@@ -737,8 +737,8 @@ bot.onText(/\/balance/, async (msg) => {
     await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
-// Handle /tip command
-bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
+// Handle /pay command
+bot.onText(/\/pay (@\w+) (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id.toString();
     const recipientUsername = match[1].substring(1).toLowerCase(); // Remove @ and convert to lowercase
@@ -797,7 +797,7 @@ bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
 
         const buildStatusText = () => {
             const lines = [
-                '🔄 *Tip Status*',
+                '🔄 *Payment Status*',
                 `Recipient: @${recipientUsername}`,
                 `Amount: ${amount.toFixed(6)} MON`
             ];
@@ -808,11 +808,11 @@ bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
             lines.push(`${status.failed ? '❌' : status.sent ? '✅' : '⏳'} Sending transaction`);
             lines.push(`${status.failed ? '❌' : status.success ? '✅' : status.confirming ? '⏳' : '○'} Confirming on-chain`);
             if (status.failed) {
-                lines.push(`❌ Tip failed: ${status.errorMessage}`);
+                lines.push(`❌ Payment failed: ${status.errorMessage}`);
             } else if (status.success) {
-                lines.push('✅ Tip successful!');
+                lines.push('✅ Payment successful!');
             } else {
-                lines.push('○ Tip successful!');
+                lines.push('○ Payment successful!');
             }
             return lines.join('\n');
         };
@@ -884,18 +884,18 @@ bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
         
         // Save tip to database
         await pool.query(
-            'INSERT INTO tips (from_user_id, to_username, amount, fee_amount, transaction_signature) VALUES ($1, $2, $3, $4, $5)',
+            'INSERT INTO payments (from_user_id, to_username, amount, fee_amount, transaction_signature) VALUES ($1, $2, $3, $4, $5)',
             [userId, recipientUsername, amount, fee, transaction.hash]
         );
         
-        const successMessage = `✅ *Tip Sent Successfully!*
+        const successMessage = `✅ *Payment Sent Successfully!*
 
-💸 Amount: ${amount.toFixed(6)} MON
-👤 To: @${recipientUsername}
-💰 Fee: ${fee.toFixed(6)} MON
+💰 Amount: ${amount.toFixed(6)} MON
+💵 Fee: ${fee.toFixed(6)} MON (10%)
+📍 To: @${recipientUsername}
 🔗 [View Transaction](${getTransactionLink(transaction.hash)})
 
-The recipient can use /claim to receive their tip!`;
+The recipient can use /claim to receive their payment!`;
 
         await bot.sendMessage(chatId, successMessage, { 
             parse_mode: 'Markdown',
@@ -907,7 +907,7 @@ The recipient can use /claim to receive their tip!`;
         if (setStatus) {
             await setStatus({ failed: true, confirming: false, sent: !!status?.sent, errorMessage: error.message });
         }
-        await bot.sendMessage(chatId, `❌ Failed to send tip: ${error.message}`);
+        await bot.sendMessage(chatId, `❌ Failed to send payment: ${error.message}`);
     }
 });
 
@@ -979,12 +979,12 @@ Use /start and click "💰 Create/View Wallet" to create your funding wallet. Th
 *Step 2: Fund Your Wallet*
 Send MON to your funding wallet address. You can find it using /balance.
 
-*Step 3: Send Tips*
-Use the command: /tip @username amount
-Example: /tip @alice 1.5
+*Step 3: Send Payments*
+Use the command: /pay @username amount
+Example: /pay @alice 1.5
 
-*Step 4: Receive Tips*
-When someone tips you, use /claim to see your claim wallet and manage your received tips.
+*Step 4: Receive Payments*
+When someone pays you, use /claim to see your claim wallet and manage your received payments.
 
 *Step 5: Manage Your Funds*
 • Transfer tips to your funding wallet

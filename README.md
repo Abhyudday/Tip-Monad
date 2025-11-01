@@ -139,7 +139,7 @@ Replace the placeholder address with your actual Monad wallet address where you 
 | `/start` | Create your funding wallet and see welcome message |
 | `/help` | Show help message with all commands |
 | `/balance` | Check your wallet balances |
-| `/tip @username amount` | Send MON to another user |
+| `/pay @username amount` | Send MON to another user |
 | `/claim` | View and manage your received tips |
 | `/tutorial` | Show the tutorial guide |
 
@@ -158,10 +158,10 @@ Replace the placeholder address with your actual Monad wallet address where you 
 
 ## Usage Examples
 
-### Basic Tipping
+### Basic Payments
 ```
-/tip @alice 1.5
-/tip @bob 0.5
+/pay @alice 1.5
+/pay @bob 0.5
 /balance
 /claim
 ```
