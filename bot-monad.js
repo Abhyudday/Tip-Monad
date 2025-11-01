@@ -912,22 +912,44 @@ bot.onText(/\/pay (@\w+) (.+)/, async (msg, match) => {
 
 Use /claim to access your payment!`;
 
-            // Try to get recipient's telegram user ID from database
+            let recipientUserId = null;
+            
+            // First, try to get from database
             const recipientData = await pool.query(
                 'SELECT telegram_user_id FROM claim_wallets WHERE username = $1',
                 [recipientUsername]
             );
             
             if (recipientData.rows.length > 0 && recipientData.rows[0].telegram_user_id) {
+                recipientUserId = recipientData.rows[0].telegram_user_id;
+            } else if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
+                // Try to find user in the group by searching recent messages or members
+                try {
+                    // Get chat members if it's a group
+                    const chatMember = await bot.getChatMember(chatId, msg.from.id).catch(() => null);
+                    
+                    // Try to search for the recipient username in the group
+                    // Note: This is limited by Telegram API - we can only get info about users who have interacted
+                    console.log(`Attempting to find @${recipientUsername} in group chat...`);
+                } catch (searchError) {
+                    console.log(`Could not search for user in group: ${searchError.message}`);
+                }
+            }
+            
+            if (recipientUserId) {
                 // Send direct message to recipient
-                await bot.sendMessage(recipientData.rows[0].telegram_user_id, recipientNotification, {
+                await bot.sendMessage(recipientUserId, recipientNotification, {
                     parse_mode: 'Markdown',
                     disable_web_page_preview: true
                 }).catch((error) => {
                     console.log(`Could not send direct notification to @${recipientUsername}: ${error.message}`);
                 });
             } else {
-                console.log(`No telegram_user_id found for @${recipientUsername}, notification not sent`);
+                // Send notification in the group chat mentioning the user
+                const groupNotification = `🎉 @${recipientUsername} you received a payment of ${amount.toFixed(6)} MON from @${senderUsername}!\n\nUse /claim in a private message with me to access your payment!`;
+                await bot.sendMessage(chatId, groupNotification).catch((error) => {
+                    console.log(`Could not send group notification: ${error.message}`);
+                });
             }
         } catch (notificationError) {
             console.error('Error sending recipient notification:', notificationError);
