@@ -112,6 +112,18 @@ async function initializeDatabase() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
+        
+        // Add telegram_user_id column if it doesn't exist (migration)
+        try {
+            await pool.query(`
+                ALTER TABLE claim_wallets 
+                ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;
+            `);
+            console.log('Database migration: telegram_user_id column added/verified');
+        } catch (migrationError) {
+            console.log('Migration note:', migrationError.message);
+        }
+        
         console.log('Database initialized successfully');
     } catch (error) {
         console.error('Error initializing database:', error);
