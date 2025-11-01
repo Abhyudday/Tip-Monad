@@ -223,9 +223,17 @@ async function checkTransactionStatus(txHash, maxRetries = 3) {
 // Handle /start command
 bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
+    const chatType = msg.chat.type;
     const userId = msg.from.id;
     const username = msg.from.username ? msg.from.username.toLowerCase() : null;
     const startParam = match[1]; // Get the start parameter if any
+    
+    // Only works in private chats
+    if (chatType === 'group' || chatType === 'supergroup') {
+        const botUsername = (await bot.getMe()).username;
+        await bot.sendMessage(chatId, `❌ Please use /start in a private message with @${botUsername}!`);
+        return;
+    }
     
     // Send welcome message with buttons
     const keyboard = {
@@ -589,13 +597,30 @@ bot.on('message', async (msg) => {
 // Handle /help command
 bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
+    const chatType = msg.chat.type;
+    
+    // Only works in private chats
+    if (chatType === 'group' || chatType === 'supergroup') {
+        const botUsername = (await bot.getMe()).username;
+        await bot.sendMessage(chatId, `❌ Please use /help in a private message with @${botUsername}!`);
+        return;
+    }
+    
     await bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
 // Handle /balance command
 bot.onText(/\/balance/, async (msg) => {
     const chatId = msg.chat.id;
+    const chatType = msg.chat.type;
     const userId = msg.from.id.toString();
+    
+    // Only works in private chats
+    if (chatType === 'group' || chatType === 'supergroup') {
+        const botUsername = (await bot.getMe()).username;
+        await bot.sendMessage(chatId, `❌ Please use /balance in a private message with @${botUsername}!`);
+        return;
+    }
     const username = msg.from.username ? msg.from.username.toLowerCase() : null;
     
     const userWallet = userWallets.get(userId);
@@ -726,7 +751,15 @@ The recipient can use /claim to receive their tip!`;
 // Handle /claim command
 bot.onText(/\/claim/, async (msg) => {
     const chatId = msg.chat.id;
+    const chatType = msg.chat.type;
     const username = msg.from.username ? msg.from.username.toLowerCase() : null;
+    
+    // Only works in private chats
+    if (chatType === 'group' || chatType === 'supergroup') {
+        const botUsername = (await bot.getMe()).username;
+        await bot.sendMessage(chatId, `❌ Please use /claim in a private message with @${botUsername}, not in the group!`);
+        return;
+    }
     
     if (!username) {
         await bot.sendMessage(chatId, "❌ Please set a username in your Telegram profile to claim tips.");
@@ -766,6 +799,14 @@ Use the buttons below to manage your tips!`;
 // Handle /tutorial command
 bot.onText(/\/tutorial/, async (msg) => {
     const chatId = msg.chat.id;
+    const chatType = msg.chat.type;
+    
+    // Only works in private chats
+    if (chatType === 'group' || chatType === 'supergroup') {
+        const botUsername = (await bot.getMe()).username;
+        await bot.sendMessage(chatId, `❌ Please use /tutorial in a private message with @${botUsername}!`);
+        return;
+    }
     
     const tutorial = `📖 *Monad Tip Bot Tutorial*
 
@@ -899,30 +940,15 @@ Your balance: ${balance.toFixed(6)} MON
                     firstName: admin.user.first_name
                 }));
         } else {
-            // For members, we need to track active members
-            // Since Telegram doesn't provide a direct way to get all members, we'll use recent message history
-            await bot.sendMessage(chatId, "⏳ Scanning group members... This may take a moment.");
-            
-            // Get recent messages (up to 100) to find active members
-            // Note: This is a limitation - in production, you'd want to maintain a member database
-            const recentMessages = [];
-            try {
-                // This is a simplified approach - in production, track members over time
-                eligibleMembers = admins
-                    .filter(admin => admin.user.username && !admin.user.is_bot && admin.user.id !== msg.from.id)
-                    .map(admin => ({
-                        id: admin.user.id,
-                        username: admin.user.username,
-                        firstName: admin.user.first_name
-                    }));
-                    
-                // For a proper implementation, you'd need to track members in your database
-                // when they send messages or join the group
-                await bot.sendMessage(chatId, `⚠️ *Note:* Only members with usernames who have recently interacted can be selected. Consider tagging specific users or using admin-only mode.`, 
-                    { parse_mode: 'Markdown' });
-            } catch (error) {
-                console.error('Error getting members:', error);
-            }
+            // For members, use admins as eligible members
+            // Note: This is a simplified approach - in production, track members over time in database
+            eligibleMembers = admins
+                .filter(admin => admin.user.username && !admin.user.is_bot && admin.user.id !== msg.from.id)
+                .map(admin => ({
+                    id: admin.user.id,
+                    username: admin.user.username,
+                    firstName: admin.user.first_name
+                }));
         }
         
         if (eligibleMembers.length === 0) {
@@ -1088,7 +1114,7 @@ Your balance: ${balance.toFixed(6)} MON`,
         senderWallet: userWallet,
         amount,
         fee,
-        participants: new Set(),
+        participants: new Map(), // Use Map to store by userId
         messageId: msg.message_id,
         startTime: Date.now()
     });
@@ -1132,19 +1158,13 @@ bot.on('message', async (msg) => {
         // Check all active giveaways in this chat
         for (const [key, giveaway] of activeGmonadGiveaways.entries()) {
             if (giveaway.chatId === chatId && userId !== parseInt(giveaway.senderId)) {
-                // Add participant
-                giveaway.participants.add({
-                    id: userId,
-                    username: username
-                });
-                
-                // React to the message (optional - may not work in all groups)
-                try {
-                    await bot.sendMessage(chatId, `✅ @${username} entered the giveaway!`, {
-                        reply_to_message_id: msg.message_id
+                // Add participant to Map (will not add duplicates)
+                if (!giveaway.participants.has(userId)) {
+                    giveaway.participants.set(userId, {
+                        id: userId,
+                        username: username
                     });
-                } catch (error) {
-                    // Silent fail
+                    console.log(`User ${username} (${userId}) entered giveaway ${key}`);
                 }
                 
                 break;
@@ -1158,7 +1178,7 @@ async function closeGmonadGiveaway(giveawayKey) {
     const giveaway = activeGmonadGiveaways.get(giveawayKey);
     if (!giveaway) return;
     
-    const participants = Array.from(giveaway.participants);
+    const participants = Array.from(giveaway.participants.values());
     
     if (participants.length === 0) {
         await bot.sendMessage(giveaway.chatId, "⏰ GM giveaway ended - no participants!");
@@ -1168,6 +1188,7 @@ async function closeGmonadGiveaway(giveawayKey) {
     
     // Pick random winner
     const winner = participants[Math.floor(Math.random() * participants.length)];
+    console.log(`GM giveaway winner: ${winner.username} from ${participants.length} participants`);
     
     try {
         // Send tip to winner
