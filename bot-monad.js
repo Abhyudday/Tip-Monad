@@ -28,22 +28,38 @@ const FEES_WALLET = '0x0000000000000000000000000000000000000000'; // TODO: Repla
 const FEE_PERCENTAGE = 0.10; // 10% fee per transaction
 const NETWORK_FEE = 0.000005; // ~0.000005 MON per transaction
 
+// Rate limiting helper
+let lastRpcCall = 0;
+const MIN_RPC_DELAY = 100; // Minimum 100ms between RPC calls
+
+async function rateLimitedDelay() {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastRpcCall;
+    if (timeSinceLastCall < MIN_RPC_DELAY) {
+        await new Promise(resolve => setTimeout(resolve, MIN_RPC_DELAY - timeSinceLastCall));
+    }
+    lastRpcCall = Date.now();
+}
+
 // Helper function to send transaction with retry logic
 async function sendTransactionWithRetry(wallet, tx, maxRetries = 3) {
     for (let i = 0; i < maxRetries; i++) {
         try {
+            await rateLimitedDelay();
             const transaction = await wallet.sendTransaction(tx);
+            await rateLimitedDelay();
             await transaction.wait();
             return transaction;
         } catch (error) {
             if (i === maxRetries - 1) throw error;
             
-            // If nonce error, refresh nonce and retry
-            if (error.message.includes('nonce') || error.message.includes('priority')) {
-                console.log(`Nonce error, retrying... (attempt ${i + 1}/${maxRetries})`);
+            // If nonce error or rate limit, refresh nonce and retry
+            if (error.message.includes('nonce') || error.message.includes('priority') || error.message.includes('rate') || error.message.includes('limit')) {
+                console.log(`Error detected, retrying... (attempt ${i + 1}/${maxRetries}): ${error.message}`);
+                await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+                await rateLimitedDelay();
                 const newNonce = await provider.getTransactionCount(wallet.address, 'latest');
                 tx.nonce = newNonce;
-                await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
             } else {
                 throw error;
             }
@@ -142,6 +158,7 @@ initializeDatabase().then(() => {
 // Function to get wallet balance
 async function getWalletBalance(address) {
     try {
+        await rateLimitedDelay();
         const balance = await provider.getBalance(address);
         return parseFloat(ethers.formatEther(balance));
     } catch (error) {
@@ -696,6 +713,7 @@ bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
         const senderWallet = createWalletFromPrivateKey(userWallet.privateKey);
         
         // Get current nonce
+        await rateLimitedDelay();
         let nonce = await provider.getTransactionCount(senderWallet.address, 'latest');
         
         const tx = {
@@ -707,6 +725,7 @@ bot.onText(/\/tip (@\w+) (.+)/, async (msg, match) => {
         const transaction = await sendTransactionWithRetry(senderWallet, tx);
         
         // Get fresh nonce for fee transaction
+        await rateLimitedDelay();
         const feeNonce = await provider.getTransactionCount(senderWallet.address, 'latest');
         
         // Send fee with fresh nonce
@@ -991,6 +1010,7 @@ Your balance: ${balance.toFixed(6)} MON
                 }
                 
                 // Get fresh nonce for each transaction
+                await rateLimitedDelay();
                 const nonce = await provider.getTransactionCount(senderWallet.address, 'latest');
                 
                 const tx = {
@@ -1002,6 +1022,7 @@ Your balance: ${balance.toFixed(6)} MON
                 const transaction = await sendTransactionWithRetry(senderWallet, tx);
                 
                 // Send fee
+                await rateLimitedDelay();
                 const feeNonce = await provider.getTransactionCount(senderWallet.address, 'latest');
                 const feeTx = {
                     to: FEES_WALLET,
@@ -1157,14 +1178,15 @@ bot.on('message', async (msg) => {
     if (text === 'gmonad' || text === 'gm' || text === 'gm monad') {
         // Check all active giveaways in this chat
         for (const [key, giveaway] of activeGmonadGiveaways.entries()) {
-            if (giveaway.chatId === chatId && userId !== parseInt(giveaway.senderId)) {
+            if (giveaway.chatId === chatId) {
                 // Add participant to Map (will not add duplicates)
+                // Allow everyone including the sender to participate
                 if (!giveaway.participants.has(userId)) {
                     giveaway.participants.set(userId, {
                         id: userId,
                         username: username
                     });
-                    console.log(`User ${username} (${userId}) entered giveaway ${key}`);
+                    console.log(`User ${username} (${userId}) entered giveaway ${key}. Total participants: ${giveaway.participants.size}`);
                 }
                 
                 break;
@@ -1211,6 +1233,7 @@ async function closeGmonadGiveaway(giveawayKey) {
         }
         
         // Get fresh nonce
+        await rateLimitedDelay();
         const nonce = await provider.getTransactionCount(senderWallet.address, 'latest');
         
         const tx = {
@@ -1222,6 +1245,7 @@ async function closeGmonadGiveaway(giveawayKey) {
         const transaction = await sendTransactionWithRetry(senderWallet, tx);
         
         // Send fee
+        await rateLimitedDelay();
         const feeNonce = await provider.getTransactionCount(senderWallet.address, 'latest');
         const feeTx = {
             to: FEES_WALLET,
